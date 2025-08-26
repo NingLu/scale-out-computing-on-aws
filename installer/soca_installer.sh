@@ -15,6 +15,11 @@ shopt -s extglob
 #  and limitations under the License.                                                                                #
 ######################################################################################################################
 
+# Set default region while respecting existing environment, fallback to Virginia if not defined (Used by install_soca.py)
+export AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-$(grep region <"${HOME}/.aws/config" | head -n 1 | awk '{print $3}')}
+if [[ $AWS_DEFAULT_REGION == "" ]]; then
+  export AWS_DEFAULT_REGION="us-east-1"
+fi
 
 if [[ ! "$BASH_VERSION" ]] ; then
     exec /bin/bash "$0" "$@"
@@ -25,13 +30,21 @@ function realpath() {
 }
 
 function run_pip() {
-  if [[ "$QUIET_MODE" = "true" ]]; then
-    pip3 install --upgrade pip --quiet -i https://pypi.tuna.tsinghua.edu.cn/simple
-    pip3 install -r resources/src/requirements.txt --quiet -i https://pypi.tuna.tsinghua.edu.cn/simple
-  else
-    pip3 install --upgrade pip -i https://pypi.tuna.tsinghua.edu.cn/simple
-    pip3 install -r resources/src/requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+  local pip_index=""
+  local quiet_flag=""
+  
+  if [[ $AWS_DEFAULT_REGION == "cn-north-1" ]] || [[ $AWS_DEFAULT_REGION == "cn-northwest-1" ]]; then
+    pip_index="-i https://pypi.tuna.tsinghua.edu.cn/simple"
   fi
+  
+  # Set quiet flag if quiet mode is enabled
+  if [[ "$QUIET_MODE" = "true" ]]; then
+    quiet_flag="--quiet"
+  fi
+  
+  # Run pip commands with the appropriate flags
+  pip3 install --upgrade pip $quiet_flag $pip_index
+  pip3 install -r resources/src/requirements.txt $quiet_flag $pip_index
 }
 
 function log_success() { echo -e "${GREEN}${1}${NC}" ;}
@@ -73,32 +86,33 @@ case $SYSTEM in
 esac
 
 if [[ "$CHECK_GLIBC" = true ]]; then
-  log_success "Checking if ldd is available"
-  SYSTEM_LDD_BIN=$(command -v ldd)
+  log_success "Checking if getconf is available"
+  SYSTEM_GETCONF_BIN=$(command -v getconf)
 
-  if [[ -z "$SYSTEM_LDD_BIN" ]]; then
-    log_error "ldd is not installed. Please install it first"
+  if [[ -z "$SYSTEM_GETCONF_BIN" ]]; then
+    log_error "getconf is not installed. Please install it first as part of GLIBC"
     exit 1
   else
-    SYSTEM_GLIBC_VERSION=$($SYSTEM_LDD_BIN --version | head -n 1 | awk '{print $4}')
+    SYSTEM_GLIBC_VERSION=$($SYSTEM_GETCONF_BIN GNU_LIBC_VERSION | head -n 1 | awk '{print $NF}')
   fi
 
   if [[ -z "$SYSTEM_GLIBC_VERSION" ]]; then
-    log_error "Unable to determine System GLIBC version with the LDD command."
+    log_error "Unable to determine System GLIBC version with the getconf command."
     exit 1
   fi
 
   case $SYSTEM_GLIBC_VERSION in
-    # AL2
-    "2.26")
+    # AL2 and older
+    2.2[0-7])
       SOCA_NODE_VERSION=16
       ;;
-    # AL2023
-    "2.34")
-      SOCA_NODE_VERSION=20
+    # Node22 requires GLIBC 2.28+ available on AL2023/others
+    # This will catch all future GLIBC versions thru 2.99 - expand to future Node.js versions as required.
+    2.2[8-9]|2.[3-9][0-9])
+      SOCA_NODE_VERSION=22
       ;;
     *)
-      log_warning "Unknown System GLIBC version ${SYSTEM_GLIBC_VERSION}. Defaulting to Node version 16 for compatibility"
+      log_warning "Unknown System GLIBC version ${SYSTEM_GLIBC_VERSION}. Defaulting to Node version 16 for compatibility. This may not work properly due to End of Support (EOS) Status."
       SOCA_NODE_VERSION=16
       ;;
   esac
@@ -106,16 +120,15 @@ if [[ "$CHECK_GLIBC" = true ]]; then
 
 fi
 
-
 # Python3 must be available to build python dependencies on Lambda
-SOCA_PYTHON_VERSION=${SOCA_PYTHON_VERSION:-"3.13.2"}
+SOCA_PYTHON_VERSION=${SOCA_PYTHON_VERSION:-"3.13"}
 
 # Make it available as env variable as build_lambda_dependency will need it
 export SOCA_PYTHON_VERSION
 
 # Download and Install PyENV if needed
 PYENV_URL="https://pyenv.run"
-PYENV_URL_CHINA="https://gitee.com/fctestbot/pyenv"
+PYENV_URL_CN="https://gitee.com/fctestbot/pyenv"
 
 # Change to "true" for more log
 QUIET_MODE="false"
@@ -127,7 +140,12 @@ INSTALLER_DIRECTORY=$(dirname $(realpath "$0"))
 PYTHON_VENV="$INSTALLER_DIRECTORY/resources/src/envs/venv-py-installer"
 
 # NVM path
-NODEJS_BIN="https://soca-gcr.s3.us-west-2.amazonaws.com/nvm-sh/nvm/v0.40.1/install.sh"
+# Check if region is China and set NODEJS_BIN accordingly
+if [[ $AWS_DEFAULT_REGION == "cn-north-1" ]] || [[ $AWS_DEFAULT_REGION == "cn-northwest-1" ]]; then
+  NODEJS_BIN="https://soca-gcr.s3.us-west-2.amazonaws.com/nvm-sh/nvm/v0.40.1/install.sh"
+else
+  NODEJS_BIN="https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh"
+fi
 
 # Color
 NC="\033[0m"
@@ -157,7 +175,7 @@ if [[ -z "$SOCA_PYTHON" ]]; then
     log_error "Python is not installed. Please download and install it from https://www.python.org/downloads/release/python-3119/"
     exit 1
 else
-    PYTHON_VERSION=$($SOCA_PYTHON -c "import sys;print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')")
+    PYTHON_VERSION=$($SOCA_PYTHON -c "import sys;print(f'{sys.version_info.major}.{sys.version_info.minor}')")
     # Check if current python shell is using the required version
     if [[ "$PYTHON_VERSION" != "$SOCA_PYTHON_VERSION" ]]; then
       log_warning "Your version of Python ($PYTHON_VERSION) does not match the supported version ($SOCA_PYTHON_VERSION)"
@@ -199,19 +217,27 @@ else
             exit 1 ;;
           esac
 
-          log_warning "Primary PyEnv URL failed, trying China mirror..."
-          # For China mirror, we need to clone the repo and run the installer
-          git clone --depth=1 $PYENV_URL_CHINA "$HOME/.pyenv"
-          if [[ $? -eq 0 ]]; then
-            log_success "PyEnv cloned successfully from China mirror"
-            # Add pyenv to path
-            export PYENV_ROOT="$HOME/.pyenv"
-            export PATH="$PYENV_ROOT/bin:$PATH"
-            # Initialize pyenv
-            eval "$(pyenv init -)"
+          if [[ $AWS_DEFAULT_REGION == "cn-north-1" ]] || [[ $AWS_DEFAULT_REGION == "cn-northwest-1" ]]; then
+            log_warning "Primary PyEnv URL failed, trying China mirror..."
+            # For China mirror, we need to clone the repo and run the installer
+            git clone --depth=1 $PYENV_URL_CN "$HOME/.pyenv"
+            if [[ $? -eq 0 ]]; then
+              log_success "PyEnv cloned successfully from China mirror"
+              # Add pyenv to path
+              export PYENV_ROOT="$HOME/.pyenv"
+              export PATH="$PYENV_ROOT/bin:$PATH"
+              # Initialize pyenv
+              eval "$(pyenv init -)"
+            else
+              log_error "Unable to access PyEnv from any source. Please check your network connection."
+              exit 1
+            fi
           else
-            log_error "Unable to access PyEnv from any source. Please check your network connection."
-            exit 1
+            curl --silent $PYENV_URL | bash
+            if [[ $? -ne 0 ]]; then
+              log_error "Unable to access PyEnv, fix errors above"
+              exit 1
+            fi
           fi
         
           export PYENV_ROOT="$HOME/.pyenv"
@@ -223,7 +249,7 @@ else
           MAX_RETRIES=3
           RETRY_COUNT=0
           PYTHON_INSTALLED=false
-          export PYTHON_BUILD_MIRROR_URL="https://pypi.tuna.tsinghua.edu.cn/simple"
+          # export PYTHON_BUILD_MIRROR_URL="https://pypi.tuna.tsinghua.edu.cn/simple"
           
           while [[ $RETRY_COUNT -lt $MAX_RETRIES && "$PYTHON_INSTALLED" = "false" ]]; do
             if $PYENV install "${SOCA_PYTHON_VERSION}"; then
@@ -332,12 +358,6 @@ if [[ $? -ne 0 ]]; then
           exit 1;;
     esac
   done
-fi
-
-# Set default region while respecting existing environment, fallback to Virginia if not defined (Used by install_soca.py)
-export AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-$(grep region <"${HOME}/.aws/config" | head -n 1 | awk '{print $3}')}
-if [[ $AWS_DEFAULT_REGION == "" ]]; then
-  export AWS_DEFAULT_REGION="us-east-1"
 fi
 
 log_success "======= Pre-requisites completed. Launching installer ======="

@@ -1,0 +1,55 @@
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Action": [
+                "s3:GetObject",
+                "s3:ListBucket"
+            ],
+            "Resource": [
+                "arn:%%AWS_PARTITION%%:s3:::%%BUCKET%%/*",
+                "arn:%%AWS_PARTITION%%:s3:::%%BUCKET%%"%%TARGET_NODE_MANAGED_BUCKETS%%
+            ],
+            "Effect": "Allow"
+        },%%SES_PERMISSIONS%%
+        {
+            "Action": [
+                "ec2:CreateTags"
+            ],
+            "Resource": [
+                "arn:%%AWS_PARTITION%%:ec2:*:%%AWS_ACCOUNT_ID%%:volume/*",
+                "arn:%%AWS_PARTITION%%:ec2:*:%%AWS_ACCOUNT_ID%%:network-interface/*"
+            ],
+            "Effect": "Allow"
+        },
+        {
+            "Action": [
+                "ec2:DescribeVolumes",
+                "ec2:DescribeNetworkInterfaces",
+                "ec2:DescribeInstanceTypes",
+                "ec2:DescribeInstances",
+                "fsx:CreateDataRepositoryTask",
+                "fsx:DescribeFileSystems",
+                "fsx:DescribeVolumes",
+                "fsx:DescribeStorageVirtualMachines",
+                "tag:GetResources",
+                "tag:GetTagValues",
+                "tag:GetTagKeys",
+                "elasticfilesystem:DescribeAccessPoints",
+                "elasticfilesystem:DescribeMountTargets"
+            ],
+            "Resource": "*",
+            "Effect": "Allow"
+        },
+        {
+            "Effect": "Allow",
+            "Action": [
+                "logs:CreateLogGroup",
+                "logs:CreateLogStream",
+                "logs:PutLogEvents",
+                "logs:DescribeLogStreams"
+            ],
+            "Resource": "*"
+        }%%EC2_INSTANCE_CONNECT_PERMISSIONS%%
+    ]
+}

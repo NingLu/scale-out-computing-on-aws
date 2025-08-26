@@ -7,13 +7,17 @@ function build_openpbs {
   local NCPUS=$(nproc)
   local SOCA_PYTHON="/opt/soca/{{ context.get('/configuration/ClusterId') }}/python"
   
-  # Ensure hwloc and hwloc-devel are properly installed
-  log_info "Ensuring hwloc and hwloc-devel are properly installed"
-  {% if context.get("/configuration/BaseOS") in ("ubuntu2204", "ubuntu2404") %}
-    packages_install libhwloc-dev hwloc
-  {% else %}
-    packages_install hwloc hwloc-devel
+
+  {% if context.get("/configuration/Region") in ("cn-north-1", "cn-northwest-1") %}
+    # Ensure hwloc and hwloc-devel are properly installed
+    log_info "Ensuring hwloc and hwloc-devel are properly installed"
+    {% if context.get("/configuration/BaseOS") in ("ubuntu2204", "ubuntu2404") %}
+      packages_install libhwloc-dev hwloc
+    {% else %}
+      packages_install hwloc hwloc-devel
+    {% endif %}
   {% endif %}
+
   {% if context.get("/configuration/BaseOS") in ("amazonlinux2", "rhel8", "rocky8") %}
     log_info "Detected old Linux Distro, patching libtool/automake/pkg-config to make sure we can compile OpenPBS with python3.13"
     local COMPAT_PACKAGE_INSTALLER_PATH="/opt/soca/{{ context.get('/configuration/ClusterId') }}/packages"
@@ -66,6 +70,7 @@ function build_openpbs {
   fi
 
   log_info "Running Configure, adding SOCA Python location to rpath"
+  # objdump -x /opt/pbs/sbin/pbs_sched | grep RPATH ensure this contains path to SOCA_PYTHON for hooks
   if ! LDFLAGS="-Wl,-rpath,${SOCA_PYTHON}/latest/lib" ./configure --prefix=/opt/pbs --with-python=${SOCA_PYTHON}/latest; then
     exit_fail "Unable to run ./configure --prefix=/opt/pbs for OpenPBS. See log for additional details"
   fi
@@ -147,46 +152,34 @@ function openpbs_install {
           {% endif %}
 
 
-          # todo: understand why libcjson(-dev) from yum does not work here
+          # todo: understand why libcjson(-dev) from pkg repo does not work here
           if test ! -e "/lib64/libcjson.so.1"; then
-              log_info "/lib64/libcjson.so.1 not found, installing it"
-              git clone {{ context.get("/system/scheduler/openpbs/compatibility_packages/cjson/url") }}
-              pushd cJSON
-              mkdir build
-              pushd build
-              {% if context.get("/configuration/BaseOS") in ("ubuntu2204", "ubuntu2404") %}
-                cmake ..
-              {% else %}
-                cmake3 ..
-              {% endif %}
-              make
-              make install
-              ln -sf /usr/local/lib64/libcjson.so.1 /lib64/libcjson.so.1
+            log_info "/lib64/libcjson.so.1 not found, installing it"
+            mkdir cjson_installer
+            pushd cjson_installer
+            file_download --download-url="{{ context.get("/system/scheduler/openpbs/compatibility_packages/cjson/url") }}" --save-as="cjson.tar.gz" --sha256-checksum="{{ context.get("/system/scheduler/openpbs/compatibility_packages/cjson/sha256") }}"
+            tar zxvf "cjson.tar.gz" --strip-components=1
+            mkdir build
+            pushd build
+            {% if context.get("/configuration/BaseOS") in ("ubuntu2204", "ubuntu2404") %}
+              cmake ..
+            {% else %}
+              cmake3 ..
+            {% endif %}
+            make
+            make install
+            ln -sf /usr/local/lib64/libcjson.so.1 /lib64/libcjson.so.1
+            popd
+            popd
           fi
 
         build_openpbs ${INSTALLER_DIR}
-
-      else
-          log_info "OpenPBS already installed, and at correct version (${OPENPBS_VERSION})."
-      fi
-
-    {% elif context.get("/configuration/SchedulerDeploymentType") == "s3_tgz" %}
-     local OPENPBS_VERSION="{{ context.get("/system/scheduler/openpbs/s3_tgz/version") }}"
-     local OPENPBS_S3_URI="{{ context.get("/system/scheduler/openpbs/s3_tgz/s3_uri") }}"
-
-     log_info "Installing OpenPBS via an OpenPBS archive stored on S3"
-      if [[ "${OPENPBS_INSTALLED_VERS}" != "${OPENPBS_VERSION}" ]]; then
-          log_info "OpenPBS Not Detected, Installing OpenPBS"
-          file_download --download-url="${OPENPBS_S3_URI}" --save-as="openpbs_installer_${OPENPBS_VERSION}.tgz" --download-type="s3"
-          tar zxvf "openpbs_installer_${OPENPBS_VERSION}.tgz" -C ${INSTALLER_DIR} --strip-components=1
-          build_openpbs ${INSTALLER_DIR}
       else
           log_info "OpenPBS already installed, and at correct version (${OPENPBS_VERSION})."
       fi
 
     {% else %}
       exit_fail "{{ context.get("/configuration/scheduler/deployment_type") }} must be tgz or git"
-
     {% endif %}
     popd
     log_info "Completed OpenPBS installation"
